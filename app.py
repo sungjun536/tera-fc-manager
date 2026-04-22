@@ -4,8 +4,8 @@ import pandas as pd
 import random
 from itertools import combinations
 
-# 1. 페이지 설정 및 디자인
-st.set_page_config(page_title="TERA FC 매니저 V2.0", page_icon="⚽", layout="wide")
+# 1. 페이지 설정
+st.set_page_config(page_title="TERA FC 매니저 V2.5", page_icon="⚽", layout="wide")
 
 # 2. 구글 시트 연결
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -13,125 +13,138 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def load_data():
     try:
         data = conn.read(ttl=0)
+        # 데이터 정제
         data = data.dropna(subset=['name']).drop_duplicates(subset=['name']).reset_index(drop=True)
+        # last_team 컬럼이 없으면 생성
+        if 'last_team' not in data.columns:
+            data['last_team'] = ""
         return data
     except Exception as e:
         st.error(f"⚠️ 시트 연결 실패: {e}")
-        return pd.DataFrame(columns=['name', 'skill', 'stamina'])
+        return pd.DataFrame(columns=['name', 'skill', 'stamina', 'last_team'])
 
 df = load_data()
 
-# 3. 사이드바: 명단 관리 (누구나 접근 가능)
+# 3. 사이드바: 명단 관리
 with st.sidebar:
     st.title("⚙️ 명단 관리")
-    st.caption("선수 추가 및 삭제가 가능합니다.")
-    
-    with st.expander("👤 선수 등록/삭제", expanded=True):
-        st.subheader("신규 선수 등록")
-        n_name = st.text_input("선수 이름", placeholder="이름 입력")
+    with st.expander("👤 선수 등록/삭제", expanded=False):
+        st.subheader("신규 선수")
+        n_name = st.text_input("이름")
         c1, c2 = st.columns(2)
         n_skill = c1.slider("실력", 1, 20, 10)
         n_stam = c2.slider("체력", 1, 20, 10)
+        n_last = st.selectbox("지난번 팀", ["", "A", "B"])
         
-        if st.button("✅ 명단에 추가"):
-            if n_name:
-                if n_name not in df['name'].values:
-                    new_row = pd.DataFrame([{"name": n_name, "skill": n_skill, "stamina": n_stam}])
-                    updated_df = pd.concat([df, new_row], ignore_index=True)
-                    conn.update(data=updated_df)
-                    st.success(f"{n_name} 등록 완료!")
-                    st.rerun()
-                else:
-                    st.error("이미 등록된 이름입니다.")
+        if st.button("✅ 추가"):
+            if n_name and n_name not in df['name'].values:
+                new_row = pd.DataFrame([{"name": n_name, "skill": n_skill, "stamina": n_stam, "last_team": n_last}])
+                conn.update(data=pd.concat([df, new_row], ignore_index=True))
+                st.rerun()
 
         st.divider()
-        
-        st.subheader("명단 삭제")
         if not df.empty:
-            d_name = st.selectbox("삭제할 선수 선택", df["name"].tolist())
-            if st.button("🗑️ 선택 삭제", type="secondary"):
-                updated_df = df[df["name"] != d_name]
-                conn.update(data=updated_df)
-                st.warning(f"{d_name} 삭제 완료")
+            d_name = st.selectbox("삭제 대상", df["name"].tolist())
+            if st.button("🗑️ 삭제"):
+                conn.update(data=df[df["name"] != d_name])
                 st.rerun()
 
 # 4. 메인 화면
-st.title("⚽ TERA FC 자동화 매니저")
-st.write("모든 팀 편성은 데이터 기반으로 자동 최적화됩니다.")
+st.title("⚽ TERA FC 자동화 매니저 V2.5")
+st.caption("실시간 밸런스 최적화 및 팀 중복 방지 알고리즘 가동 중")
 
 if df.empty:
-    st.info("📢 등록된 선수가 없습니다. 사이드바에서 선수를 추가해주세요!")
+    st.info("📢 등록된 선수가 없습니다.")
 else:
-    st.subheader("1. 오늘 경기 참석자 및 컨디션 체크")
+    st.subheader("1. 오늘 경기 참석자 체크")
     selected_players = []
-    
     cols = st.columns(4)
     for i, row in df.iterrows():
         with cols[i % 4]:
             with st.container(border=True):
                 is_on = st.toggle(f"**{row['name']}**", value=True, key=f"tgl_{row['name']}")
                 if is_on:
-                    cond = st.select_slider(
-                        "상태",
-                        options=["심함", "경미", "정상"],
-                        value="정상",
-                        key=f"cond_{row['name']}",
-                        label_visibility="collapsed"
-                    )
+                    cond = st.select_slider("상태", options=["심함", "경미", "정상"], value="정상", key=f"cond_{row['name']}", label_visibility="collapsed")
                     inj_map = {"정상": 0, "경미": 1, "심함": 2}
                     selected_players.append({
-                        "name": row['name'], "skill": row['skill'], "stamina": row['stamina'], "injury": inj_map[cond]
+                        "name": row['name'], 
+                        "skill": row['skill'], 
+                        "stamina": row['stamina'], 
+                        "injury": inj_map[cond],
+                        "last_team": row['last_team']
                     })
 
     st.divider()
 
-    # 팀 스탯 계산 로직
-    def get_team_stats(team):
-        s_total, t_total = 0, 0
+    # --- 밸런스 & 중복 방지 알고리즘 ---
+    def get_team_score(team):
+        score = 0
         for p in team:
             s, t = p["skill"], p["stamina"]
-            if p["injury"] == 1: s *= 0.9; t *= 0.8
-            elif p["injury"] == 2: s *= 0.6; t *= 0.4
-            s_total += s
-            t_total += t
-        return s_total, t_total
+            # 실력에 가중치 1.5배, 체력에 0.5배 적용 (실력 중심 밸런스)
+            p_score = (s * 1.5) + (t * 0.5)
+            # 부상 보정
+            if p["injury"] == 1: p_score *= 0.85
+            elif p["injury"] == 2: p_score *= 0.5
+            score += p_score
+        return score
 
-    if st.button("🔥 최적의 밸런스로 팀 나누기", type="primary"):
-        if len(selected_players) < 2:
-            st.error("🚨 참석자를 2명 이상 선택해 주세요.")
+    def get_repeat_penalty(team1, team2):
+        """지난주에 같은 팀이었던 사람들이 이번에도 같은 팀인 경우 벌점 부여"""
+        penalty = 0
+        for team in [team1, team2]:
+            last_a = sum(1 for p in team if p["last_team"] == "A")
+            last_b = sum(1 for p in team if p["last_team"] == "B")
+            # 한 팀에 지난번 같은 팀이었던 사람이 너무 몰리면 페널티
+            penalty += (last_a ** 2) + (last_b ** 2)
+        return penalty
+
+    if st.button("🔥 팀 나누기 (밸런스 + 중복 방지)", type="primary"):
+        if len(selected_players) < 4:
+            st.error("🚨 최소 4명 이상의 참석자가 필요합니다.")
         else:
-            with st.spinner("최상의 밸런스를 계산 중..."):
+            with st.spinner("최적의 조합을 시뮬레이션 중..."):
                 n = len(selected_players)
                 all_combos = list(combinations(range(n), n // 2))
-                selected_combos = random.sample(all_combos, min(len(all_combos), 10000))
+                # 5,000번 무작위 샘플링으로 정밀도 향상
+                samples = random.sample(all_combos, min(len(all_combos), 5000))
                 
-                # 실력 합산 차이가 가장 적은 조합 찾기
-                best_match = min(selected_combos, key=lambda c: abs(get_team_stats([selected_players[i] for i in c])[0] - get_team_stats([selected_players[i] for i in range(n) if i not in c])[0]))
-                
-                t1 = [selected_players[i] for i in best_match]
-                t2 = [selected_players[i] for i in range(n) if i not in best_match]
+                best_t1, best_t2 = None, None
+                min_total_penalty = float('inf')
+
+                for combo in samples:
+                    t1 = [selected_players[i] for i in combo]
+                    t2 = [selected_players[i] for i in range(n) if i not in combo]
+                    
+                    # 1. 전력 차이 계산 (낮을수록 좋음)
+                    power_diff = abs(get_team_score(t1) - get_team_score(t2))
+                    
+                    # 2. 중복 방지 페널티 계산 (낮을수록 좋음)
+                    repeat_penalty = get_repeat_penalty(t1, t2) * 0.5 # 가중치 조절 가능
+                    
+                    total_penalty = power_diff + repeat_penalty
+                    
+                    if total_penalty < min_total_penalty:
+                        min_total_penalty = total_penalty
+                        best_t1, best_t2 = t1, t2
 
             # 결과 출력
             c1, c2 = st.columns(2)
             with c1:
-                st.info(f"### 🔵 A팀 ({len(t1)}명)")
-                for p in t1:
+                st.info(f"### 🔵 A팀 ({len(best_t1)}명)")
+                for p in best_t1:
                     icon = "🟢" if p['injury']==0 else "🟡" if p['injury']==1 else "🔴"
                     st.write(f"{icon} **{p['name']}**")
             with c2:
-                st.warning(f"### 🟠 B팀 ({len(t2)}명)")
-                for p in t2:
+                st.warning(f"### 🟠 B팀 ({len(best_t2)}명)")
+                for p in best_t2:
                     icon = "🟢" if p['injury']==0 else "🟡" if p['injury']==1 else "🔴"
                     st.write(f"{icon} **{p['name']}**")
 
-    # --- 하단 공지사항 (색상 및 보정 설명) ---
+    # 가이드 안내
     st.markdown("---")
-    st.subheader("📢 컨디션 아이콘 안내")
-    
-    # 가이드 테이블 형태 출력
-    guide_cols = st.columns(3)
-    guide_cols[0].markdown("### 🟢 정상\n데이터가 **100%** 반영됩니다.")
-    guide_cols[1].markdown("### 🟡 경미(하)\n실력 **90%** / 체력 **80%** 반영")
-    guide_cols[2].markdown("### 🔴 심함(상)\n실력 **60%** / 체력 **40%** 반영")
-    
-    st.caption("※ 모든 팀 배정은 실력 지수 합계의 차이를 최소화하도록 알고리즘에 의해 자동 결정됩니다.")
+    st.subheader("📢 시스템 안내")
+    ga1, ga2, ga3 = st.columns(3)
+    ga1.markdown("#### ⚖️ 실력 중심 밸런스\n기술 점수가 전력에 더 크게 반영됩니다.")
+    ga2.markdown("#### 🔄 중복 방지 적용\n지난 경기와 팀 구성이 최대한 바뀌도록 설계되었습니다.")
+    ga3.markdown("#### 🟢🟡🔴 컨디션 보정\n부상 정도에 따라 전력 지수가 자동 하향 조정됩니다.")
