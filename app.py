@@ -5,7 +5,7 @@ import random
 from itertools import combinations
 
 # 1. 페이지 설정
-st.set_page_config(page_title="TERA FC 매니저 V2.9", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="TERA FC Team 매니저", page_icon="⚽", layout="wide")
 
 # 2. 구글 시트 연결
 conn = st.connection("gsheets", type=GSheetsConnection)
