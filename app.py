@@ -5,91 +5,84 @@ import random
 from itertools import combinations
 
 # 1. 페이지 설정
-st.set_page_config(page_title="TERA FC 매니저 V2.8", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="TERA FC 매니저 V2.9", page_icon="⚽", layout="wide")
 
-# 2. 구글 시트 연결 및 데이터 로드 로직
+# 2. 구글 시트 연결
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# 3. 데이터 로드 함수 (캐시 적용으로 429 에러 방지)
+@st.cache_data(ttl=60) # 1분 동안 데이터를 캐싱합니다.
 def load_data():
     try:
-        # 시트 데이터 읽기
+        # API 호출 (ttl=0은 내부 라이브러리 캐시를 무시하기 위함)
         data = conn.read(ttl=0)
         data = data.dropna(subset=['name']).drop_duplicates(subset=['name']).reset_index(drop=True)
         
-        # 필수 컬럼이 없을 경우 자동 생성
+        # 필수 컬럼 확인 및 타입 변환
         for col in ['skill', 'stamina', 'last_team', 'is_present']:
             if col not in data.columns:
-                data[col] = "" if col in ['last_team', 'is_present'] else 10
+                data[col] = ""
         
-        # 🔥 [중요] 타입 에러 방지: 모든 컬럼을 문자열로 변환하여 처리
-        # 특히 빈 칸(NaN)이 숫자로 인식되어 생기는 TypeError를 방지합니다.
-        data = data.fillna("") # 빈 칸을 빈 문자열로 채움
-        data = data.astype(str)
-        
-        # 실력과 체력은 계산을 위해 다시 숫자로 변환
+        data = data.fillna("").astype(str)
         data['skill'] = pd.to_numeric(data['skill'], errors='coerce').fillna(10)
         data['stamina'] = pd.to_numeric(data['stamina'], errors='coerce').fillna(10)
         
         return data
     except Exception as e:
-        st.error(f"⚠️ 데이터 로드 실패: {e}")
-        return pd.DataFrame(columns=['name', 'skill', 'stamina', 'last_team', 'is_present'])
+        if "429" in str(e):
+            st.error("🚀 구글 API 한도 초과! 1분만 기다렸다가 새로고침해 주세요.")
+        else:
+            st.error(f"⚠️ 연결 실패: {e}")
+        return pd.DataFrame()
 
-df = load_data()
+# 세션 상태에 데이터 저장 (새로고침 전까지 유지)
+if 'master_df' not in st.session_state:
+    st.session_state.master_df = load_data()
 
-# 3. 사이드바: 명단 관리
+df = st.session_state.master_df
+
+# 4. 사이드바: 명단 관리
 with st.sidebar:
     st.title("⚙️ 명단 관리")
-    with st.expander("👤 선수 등록/삭제", expanded=False):
-        st.subheader("신규 선수")
-        n_name = st.text_input("이름", key="new_player_name")
+    if st.button("🔄 데이터 강제 새로고침"):
+        st.cache_data.clear()
+        st.session_state.master_df = load_data()
+        st.rerun()
+
+    with st.expander("👤 선수 등록/삭제"):
+        n_name = st.text_input("이름")
         c1, c2 = st.columns(2)
         n_skill = c1.slider("실력", 1, 20, 10)
         n_stam = c2.slider("체력", 1, 20, 10)
-        
         if st.button("✅ 선수 추가"):
             if n_name and n_name not in df['name'].values:
                 new_row = pd.DataFrame([{"name": n_name, "skill": n_skill, "stamina": n_stam, "last_team": "", "is_present": "TRUE"}])
-                # 기존 데이터와 합치기 전 타입 통일
-                updated_list = pd.concat([df, new_row], ignore_index=True)
-                conn.update(data=updated_list)
-                st.success(f"{n_name} 등록 완료!")
+                conn.update(data=pd.concat([df, new_row], ignore_index=True))
+                st.cache_data.clear()
+                st.session_state.master_df = load_data()
                 st.rerun()
 
-        st.divider()
-        if not df.empty:
-            d_name = st.selectbox("삭제 대상", df["name"].tolist())
-            if st.button("🗑️ 삭제"):
-                conn.update(data=df[df["name"] != d_name])
-                st.rerun()
-
-# 4. 메인 화면
-st.title("⚽ TERA FC 매니저 V2.8")
-st.caption("참석 정보와 팀 결과가 구글 시트에 안전하게 기록됩니다.")
+# 5. 메인 화면
+st.title("⚽ TERA FC 매니저 V2.9")
+st.caption("API 최적화 버전: 참석 정보는 하단 저장 버튼을 누를 때 시트에 반영됩니다.")
 
 if df.empty:
-    st.info("📢 등록된 선수가 없습니다. 사이드바에서 선수를 추가해 주세요!")
+    st.info("📢 데이터를 불러오는 중이거나 명단이 비어있습니다.")
 else:
     st.subheader("1. 오늘 경기 참석자 체크")
     selected_players = []
     cols = st.columns(4)
     
-    # 참석 여부 실시간 동기화용
-    updated_df = df.copy()
-    needs_sync = False
-
     for i, row in df.iterrows():
         with cols[i % 4]:
             with st.container(border=True):
-                # 시트의 TRUE/FALSE 값을 읽어서 토글 상태 결정
-                is_checked = True if str(row['is_present']).upper() == "TRUE" else False
-                is_on = st.toggle(f"**{row['name']}**", value=is_checked, key=f"tgl_{row['name']}")
+                # [수정] 시트 값이 없거나 처음 시작할 때 기본값을 TRUE(참석)로 설정
+                # 시트의 is_present가 명시적으로 'FALSE'일 때만 False로 인식
+                is_present_val = str(row['is_present']).upper()
+                default_toggle = False if is_present_val == "FALSE" else True
                 
-                # 토글 상태가 시트와 다르면 즉시 플래그 세우기
-                if is_on != is_checked:
-                    updated_df.at[i, 'is_present'] = str(is_on).upper()
-                    needs_sync = True
-
+                is_on = st.toggle(f"**{row['name']}**", value=default_toggle, key=f"tgl_{row['name']}")
+                
                 if is_on:
                     cond = st.select_slider("상태", options=["심함", "경미", "정상"], value="정상", key=f"cond_{row['name']}", label_visibility="collapsed")
                     inj_map = {"정상": 0, "경미": 1, "심함": 2}
@@ -101,18 +94,24 @@ else:
                         "last_team": str(row['last_team'])
                     })
 
-    # 변경사항이 있으면 시트에 한 번만 업데이트
-    if needs_sync:
-        conn.update(data=updated_df)
-        st.rerun()
+    # API 호출을 줄이기 위한 명시적 저장 버튼
+    if st.button("💾 현재 참석 명단 시트에 저장"):
+        with st.spinner("구글 시트에 동기화 중..."):
+            sync_df = df.copy()
+            for i, row in sync_df.iterrows():
+                # 화면의 현재 토글 상태를 수집
+                tgl_state = st.session_state[f"tgl_{row['name']}"]
+                sync_df.at[i, 'is_present'] = str(tgl_state).upper()
+            conn.update(data=sync_df)
+            st.cache_data.clear()
+            st.success("시트 저장 완료!")
 
     st.divider()
 
-    # --- 팀 나누기 알고리즘 ---
+    # --- 팀 나누기 로직 ---
     def get_team_score(team):
         score = 0
         for p in team:
-            # 실력 중심 가중치 계산
             p_score = (p["skill"] * 1.5) + (p["stamina"] * 0.5)
             if p["injury"] == 1: p_score *= 0.85
             elif p["injury"] == 2: p_score *= 0.5
@@ -142,10 +141,8 @@ else:
                 for combo in samples:
                     t1 = [selected_players[i] for i in combo]
                     t2 = [selected_players[i] for i in range(n) if i not in combo]
-                    
                     diff = abs(get_team_score(t1) - get_team_score(t2))
-                    penalty = get_repeat_penalty(t1, t2) * 0.5 # 중복 방지 가중치
-                    
+                    penalty = get_repeat_penalty(t1, t2) * 0.5
                     if (diff + penalty) < min_total_penalty:
                         min_total_penalty = diff + penalty
                         best_t1, best_t2 = t1, t2
@@ -163,16 +160,14 @@ else:
                         icon = "🟢" if p['injury']==0 else "🟡" if p['injury']==1 else "🔴"
                         st.write(f"{icon} **{p['name']}**")
 
-                # --- 결과를 시트에 영구 기록 ---
+                # 결과 시트 자동 저장
                 final_df = df.copy()
                 t1_names = [p['name'] for p in best_t1]
                 t2_names = [p['name'] for p in best_t2]
-                
                 for idx, row in final_df.iterrows():
-                    if row['name'] in t1_names:
-                        final_df.at[idx, 'last_team'] = "A"
-                    elif row['name'] in t2_names:
-                        final_df.at[idx, 'last_team'] = "B"
+                    if row['name'] in t1_names: final_df.at[idx, 'last_team'] = "A"
+                    elif row['name'] in t2_names: final_df.at[idx, 'last_team'] = "B"
                 
                 conn.update(data=final_df)
-                st.success("✅ 팀 구성 결과가 시트에 저장되었습니다. (다음 경기 밸런스에 반영)")
+                st.cache_data.clear()
+                st.success("✅ 팀 구성 결과가 시트에 저장되었습니다.")
