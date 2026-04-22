@@ -63,7 +63,7 @@ with st.sidebar:
                 st.rerun()
 
 # 5. 메인 화면
-st.title("⚽ TERA FC 매니저 V2.9")
+st.title("⚽ TERA FC TEAM 매니저_우사랑멍청이")
 st.caption("API 최적화 버전: 참석 정보는 하단 저장 버튼을 누를 때 시트에 반영됩니다.")
 
 if df.empty:
