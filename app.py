@@ -15,7 +15,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def load_data():
     try:
         # API 호출 (ttl=0은 내부 라이브러리 캐시를 무시하기 위함)
-        data = conn.read(ttl=0)
+        data = conn.read(ttl=5)
         data = data.dropna(subset=['name']).drop_duplicates(subset=['name']).reset_index(drop=True)
         
         # 필수 컬럼 확인 및 타입 변환
