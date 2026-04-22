@@ -103,7 +103,7 @@ else:
             with st.spinner("최상의 밸런스를 계산 중..."):
                 n = len(selected_players)
                 all_combos = list(combinations(range(n), n // 2))
-                selected_combos = random.sample(all_combos, min(len(all_combos), 3000))
+                selected_combos = random.sample(all_combos, min(len(all_combos), 10000))
                 
                 # 실력 합산 차이가 가장 적은 조합 찾기
                 best_match = min(selected_combos, key=lambda c: abs(get_team_stats([selected_players[i] for i in c])[0] - get_team_stats([selected_players[i] for i in range(n) if i not in c])[0]))
