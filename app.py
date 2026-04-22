@@ -53,7 +53,7 @@ with st.sidebar:
 
 # 5. 메인 화면
 st.title("⚽ TERA FC TEAM 우사랑 매니저")
-st.caption("참석 여부를 저장한 후 새로고침하면 시트의 최신 상태(TRUE/FALSE)를 그대로 불러옵니다.")
+st.caption("기부 계좌 568-02575401-027 예금주 : 김성준")
 
 if not df.empty:
     st.subheader("1. 오늘 경기 참석자 체크")
